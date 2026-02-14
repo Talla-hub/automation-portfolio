@@ -1,0 +1,370 @@
+// =========================
+// 0) Valeurs par défaut
+// =========================
+// Convoyeurs et ascenseurs coupés par défaut
+#EntryConveyorCmd := FALSE;
+#UnloadLeftCmd := FALSE;
+#LoadLeftCmd := FALSE;
+#Conveyor0Cmd := FALSE;
+#UnloadRightCmd := FALSE;
+#LoadRightCmd := FALSE;
+#ExitConveyorCmd := FALSE;
+#LeftUpCmd := FALSE;
+#LeftSlowCmd := FALSE;
+#LeftDownCmd := FALSE;
+#RightUpCmd := FALSE;
+#RightSlowCmd := FALSE;
+#RightDownCmd := FALSE;
+#Conveyor1Cmd := FALSE;
+#Conveyor2Cmd := FALSE;
+#LeftWarningCmd := FALSE;
+#RightWarningCmd := FALSE;
+#Green0Cmd := FALSE;
+#Yellow0Cmd := FALSE;
+#Red0Cmd := FALSE;
+#B_GreenCmd := FALSE;
+#B_YellowCmd := FALSE;
+#B_RedCmd := FALSE;
+#C_GreenCmd := FALSE;
+#C_YellowCmd := FALSE;
+#C_RedCmd := FALSE;
+#StartLightCmd := FALSE;
+#ResetLightCmd := FALSE;
+#StopLightCmd  := FALSE;
+// Voyants simples
+#StartLightCmd := #AutoModeCmd;       // Auto = voyant Start
+#StopLightCmd := (NOT #EmergencyStopCmd) OR #EStopLatched;  // E-Stop = voyant Stop
+#ResetLightCmd := #ResetCmd;          // Reset appuyé
+
+
+// ======================================================
+// 0.1) Sécurité / Arrêts - ARRÊT D'URGENCE (AU)
+// ======================================================
+
+// 1) Latch AU dès qu’il est appuyé 
+#trEStop(CLK := #EmergencyStopCmd);
+IF #trEStop.Q THEN
+    #EStopLatched := TRUE;
+END_IF;
+
+// 2) Tant que AU actif (ou mémorisé) : on coupe la séquence et on empêche tout redémarrage
+IF #EStopLatched OR (NOT #EmergencyStopCmd) THEN
+    
+    // Stopper les temporisations (comme tu fais déjà)
+    #tLoadLeft(IN := FALSE,
+               PT := T#0ms);
+    #tLoadRight(IN := FALSE,
+                PT := T#0ms);
+    #tLeftSlow(IN := FALSE,
+               PT := T#0ms);
+    #tRightSlow(IN := FALSE,
+                PT := T#0ms);
+    #tConv(IN := FALSE,
+           PT := T#0ms);
+    #tMoveRight(IN := FALSE,
+                PT := T#0ms);
+    
+    
+    // On force un état d’attente (aucun mouvement) tant que pas Reset
+    #CurrentState := #ST_Main_Idle;
+    #CurrentState_1 := #ST_Right_Idle; 
+    
+    // Reset autorisé uniquement quand AU relâché (chaîne OK)
+    IF #ResetCmd AND #EmergencyStopCmd THEN
+        #EStopLatched := FALSE;
+        
+        // retour maison après Reset
+        #state_1 := 0;
+        #state_2 := 0;
+        #CurrentState := #ST_Default;     
+        #CurrentState_1 := #State_Fault;    
+    END_IF;
+    
+    RETURN;
+END_IF;
+
+// STOP manuel : arrêt fonctionnel (prioritaire sur Start)
+IF NOT #StopCmd THEN
+    #EntryConveyorCmd := FALSE;
+    #UnloadLeftCmd := FALSE;
+    #LoadLeftCmd := FALSE;
+    #Conveyor0Cmd := FALSE;
+    #UnloadRightCmd := FALSE;
+    #LoadRightCmd := FALSE;
+    #ExitConveyorCmd := FALSE;
+    #LeftUpCmd := FALSE;
+    #LeftSlowCmd := FALSE;
+    #LeftDownCmd := FALSE;
+    #RightUpCmd := FALSE;
+    #RightSlowCmd := FALSE;
+    #RightDownCmd := FALSE;
+    #Conveyor1Cmd := FALSE;
+    #Conveyor2Cmd := FALSE;
+    
+    // Mettre les machines à états en attente
+    #CurrentState := #ST_Main_Idle;
+    #CurrentState_1 := #ST_Right_Idle;
+    
+    // Stopper / remettre à zéro les temporisations susceptibles d’être en cours
+    #tConv(IN := FALSE,
+           PT := T#0ms);
+    #tLeftSlow(IN := FALSE,
+               PT := T#0ms);
+    #tRightSlow(IN := FALSE,
+                PT := T#0ms);
+    #tLoadRight(IN := FALSE,
+                PT := T#0ms);
+    #tLoadLeft(IN := FALSE,
+               PT := T#0ms);
+    #tMoveRight(IN := FALSE,
+                PT := T#0ms);
+    
+    RETURN; //  important : bloque toute séquence pendant STOP
+END_IF;
+// Si pas en auto : on ne séquence pas (tu peux décider de rester Idle)
+IF NOT #AutoModeCmd THEN
+    RETURN;
+END_IF;
+
+
+// ======================================================
+// 0.2) Détecteurs de fronts (un par capteur)
+// ======================================================
+#trAtEntry(CLK := NOT #AtEntry);
+#trAtExitLeft(CLK :=NOT #AtExitLeft);
+#trAtEntryRight(CLK :=NOT #AtEntryRight);
+#trAtExit(CLK :=NOT #AtExit);
+
+
+
+// =========================
+// 1) Machine à états
+// =========================
+CASE #CurrentState OF
+        
+    #ST_Main_Idle:
+        // Repos / prêt : voyant vert, attente Start
+        #Green0Cmd := TRUE;
+        #RightUpCmd := FALSE;
+        #RightDownCmd := FALSE;
+        IF #StartCmd THEN
+            // Initialisation alternance niveaux
+            #state_1 := 1;
+            #state_2 := 1;
+            
+            // Étape suivante : amener pièce à l’entrée gauche
+            #CurrentState := #ST_Main_FeedToLeftEntry;
+        END_IF;
+        
+        
+    #ST_Main_FeedToLeftEntry:
+        // Amener pièce vers entrée gauche niveau 0
+        #EntryConveyorCmd := TRUE;
+        #LoadLeftCmd := TRUE;
+        
+        // Front sur capteur d’entrée
+        IF #trAtEntry.Q THEN
+            #tConv(IN := FALSE,
+                   PT := T#0MS);
+            
+            #CurrentState := #ST_Main_LoadLeftLift;
+        END_IF;
+        
+        
+    #ST_Main_LoadLeftLift:
+        // Temporisation de chargement ascenseur gauche
+        #tConv(IN := TRUE,
+               PT := #T_Conv);
+        
+        IF #tConv.Q THEN
+            #tConv(IN := FALSE,
+                   PT := T#0MS);
+            #tLeftSlow(IN := FALSE,
+                       PT := T#0MS);
+            
+            // Étape suivante : monter l’ascenseur gauche au niveau cible (1/2)
+            #CurrentState := #ST_Main_LiftLeft_UpToTargetLevel;
+        END_IF;
+        
+        
+    #ST_Main_LiftLeft_UpToTargetLevel:
+        // Montée ascenseur gauche + passage en slow après délai
+        #LeftUpCmd := TRUE;
+        
+        IF #state_1 = 1 THEN
+            #tLeftSlow(IN := TRUE,
+                       PT := #T_MoveElevator);
+            IF #tLeftSlow.Q THEN
+                #LeftSlowCmd := TRUE;
+            END_IF;
+            
+            // Arrivée niveau 1
+            IF #AtLeftLow1 AND #AtLeftHigh1 THEN
+                #tLeftSlow(IN := FALSE,
+                           PT := T#0MS);
+                #state_1 := 2; // prochaine fois : niveau 2
+                #CurrentState := #ST_Main_Transfer_LeftToRight;
+            END_IF;
+            
+        ELSIF #state_1 = 2 THEN
+            #tLeftSlow(IN := TRUE,
+                       PT := #T_MoveElevator_1);
+            IF #tLeftSlow.Q THEN
+                #LeftSlowCmd := TRUE;
+            END_IF;
+            
+            // Arrivée niveau 2
+            IF #AtLeftLow2 AND #AtLeftHigh2 THEN
+                #tLeftSlow(IN := FALSE,
+                           PT := T#0MS);
+                #state_1 := 1; // prochaine fois : niveau 1
+                #CurrentState := #ST_Main_Transfer_LeftToRight;
+            END_IF;
+        END_IF;
+        
+        
+    #ST_Main_Transfer_LeftToRight:
+        // Transfert pièce de gauche vers droite via convoyeurs intermédiaires
+        #LoadLeftCmd := TRUE;
+        
+        IF #state_1 = 2 THEN
+            #Conveyor1Cmd := TRUE;  // voie 1
+        ELSIF #state_1 = 1 THEN
+            #Conveyor2Cmd := TRUE;  // voie 2
+        END_IF;
+        
+        // Détection sortie gauche
+        IF #trAtExitLeft.Q THEN
+            
+            
+            // Relance machine droite si finie / inactive
+            IF (#CurrentState_1 = #ST_Right_UnloadToExit) OR (#CurrentState_1 = #ST_Right_Idle) THEN
+                #CurrentState_1 := #ST_Right_MoveUpToTargetLevel;
+            END_IF;
+            
+            // Pendant ce temps : ramener ascenseur gauche à la maison (niveau 0)
+            #CurrentState := #ST_Main_LiftLeft_ReturnHome;
+        END_IF;
+        
+        
+    #ST_Main_LiftLeft_ReturnHome:
+        // Descendre ascenseur gauche au niveau 0 (home)
+        #LeftDownCmd := TRUE;
+        
+        IF #AtLeftLow0 AND #AtLeftHigh0 THEN
+            #tMoveRight(IN := FALSE,
+                        PT := T#0ms);
+            
+            // Prêt pour la pièce suivante
+            #CurrentState := #ST_Main_FeedToLeftEntry;
+        END_IF;
+    #ST_Default:
+        #LeftUpCmd := FALSE;
+        #LeftDownCmd := TRUE;
+        IF #AtLeftLow0 AND #AtLeftHigh0 THEN
+            #LeftDownCmd := FALSE;
+            
+        END_IF;
+      
+        
+        
+END_CASE;
+CASE #CurrentState_1 OF
+    #ST_Right_Idle:
+        // Aucun mouvement côté droit
+        #RightUpCmd := FALSE;
+        #RightSlowCmd := FALSE;
+        #RightDownCmd := FALSE;
+        
+        // Pas de chargement/déchargement côté droit
+        #LoadRightCmd := FALSE;
+        #ExitConveyorCmd := FALSE;
+        // Stopper / remettre à zéro les temporisations côté droit
+        RESET_TIMER(#tRightSlow);
+        RESET_TIMER(#tLoadRight);
+    #ST_Right_MoveUpToTargetLevel:
+        // Monter ascenseur droit vers niveau 1 ou 2 selon #state_2
+        IF #state_2 = 1 THEN
+            #tLoadRight.TOF(IN := TRUE,
+                            PT := T#3740ms);
+            #RightUpCmd := #tLoadRight.Q;
+            
+            #tRightSlow.TON(IN := TRUE,
+                            PT := T#3740ms);
+            #RightSlowCmd := #tRightSlow.Q;
+            
+            IF #AtRightLow1 AND #AtRightHigh1 THEN
+                RESET_TIMER(#tRightSlow);
+                RESET_TIMER(#tLoadRight);
+                #state_2 := 2;
+                #CurrentState_1 := #ST_Right_FeedToRightEntry;
+            END_IF;
+            
+        ELSIF #state_2 = 2 THEN
+            #tLoadRight.TOF(IN := TRUE,
+                            PT := T#7500ms);
+            #RightUpCmd := #tLoadRight.Q;
+            
+            #tRightSlow.TON(IN := TRUE,
+                            PT := T#7500ms);
+            #RightSlowCmd := #tRightSlow.Q;
+            
+            IF #AtRightLow2 AND #AtRightHigh2 THEN
+                RESET_TIMER(#tRightSlow);
+                RESET_TIMER(#tLoadRight);
+                
+                #state_2 := 1;
+                #CurrentState_1 := #ST_Right_FeedToRightEntry;
+            END_IF;
+        END_IF;
+        
+        
+    #ST_Right_FeedToRightEntry:
+        // Convoyer la pièce jusqu’à l’entrée droite + autoriser chargement droit
+        #LoadRightCmd := TRUE;
+        
+        IF #state_2 = 2 THEN
+            #Conveyor1Cmd := TRUE;
+        ELSIF #state_2 = 1 THEN
+            #Conveyor2Cmd := TRUE;
+        END_IF;
+        
+        IF #trAtEntryRight.Q THEN
+            
+            #CurrentState_1 := #ST_Right_MoveDownToHome;
+        END_IF;
+        
+        
+    #ST_Right_MoveDownToHome:
+        // Descendre ascenseur droit au niveau 0
+        #RightDownCmd := TRUE;
+        
+        IF #AtRightLow0 AND #AtRightHigh0 THEN
+            #CurrentState_1 := #ST_Right_UnloadToExit;
+        END_IF;
+        
+        
+    #ST_Right_UnloadToExit:
+        // Éjection vers convoyeur de sortie
+        #LoadRightCmd := TRUE;
+        #ExitConveyorCmd := TRUE;
+        
+        IF #trAtExit.Q THEN
+            #LoadRightCmd := FALSE;
+            #ExitConveyorCmd := FALSE;
+            #CurrentState_1 := #ST_Right_MoveUpToTargetLevel;
+        END_IF;
+    #State_Fault:
+        #RightUpCmd := FALSE;
+        #RightDownCmd := TRUE;
+        IF #AtRightLow0 AND #AtRightHigh0 THEN
+            #RightDownCmd := FALSE;
+            
+        END_IF;
+END_CASE;
+    
+
+
+
+
+
